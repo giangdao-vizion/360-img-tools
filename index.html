@@ -1,0 +1,507 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Equirectangular 360 to Cubemap</title>
+  <style>
+    :root {
+      font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+      color-scheme: dark;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: #111827;
+      color: #e5e7eb;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      box-sizing: border-box;
+    }
+
+    .card {
+      width: min(1200px, 95vw);
+      background: #1f2937;
+      border: 1px solid #374151;
+      border-radius: 14px;
+      padding: 20px;
+      box-sizing: border-box;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: 22px;
+    }
+
+    .sub {
+      margin: 0 0 18px;
+      color: #9ca3af;
+      font-size: 14px;
+    }
+
+    .nav {
+      margin-bottom: 14px;
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .nav a {
+      display: inline-block;
+      padding: 8px 12px;
+      border-radius: 8px;
+      border: 1px solid #334155;
+      background: #111827;
+      color: #bfdbfe;
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .controls {
+      display: grid;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+
+    .row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    button {
+      border: none;
+      border-radius: 8px;
+      background: #2563eb;
+      color: white;
+      padding: 10px 14px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    button.dropzone {
+      width: min(80vw, 100%);
+      border: 2px dashed #4b5563;
+      border-radius: 10px;
+      padding: 24px;
+      min-height: clamp(420px, 65vh, 900px);
+      text-align: center;
+      background: #111827;
+      color: #d1d5db;
+      transition: border-color 0.15s ease, background-color 0.15s ease;
+      user-select: none;
+      font-weight: 500;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto;
+    }
+
+    .dropzone-inner {
+      max-width: 600px;
+      width: 100%;
+    }
+
+    button.dropzone.dragover {
+      border-color: #60a5fa;
+      background: #0b1220;
+    }
+
+    button.dropzone.ready {
+      border-color: #22c55e;
+      background: #102317;
+    }
+
+    .dropzone .hint {
+      color: #9ca3af;
+      font-size: 12px;
+      margin-top: 6px;
+    }
+
+    .dropzone .status {
+      margin-top: 8px;
+      font-size: 12px;
+      color: #86efac;
+      min-height: 16px;
+    }
+
+    .dropzone .status.pending {
+      color: #9ca3af;
+    }
+
+    .stat {
+      font-size: 13px;
+      color: #9ca3af;
+    }
+
+    .progress-wrap {
+      margin-top: 8px;
+      display: grid;
+      gap: 8px;
+    }
+
+    progress {
+      width: 100%;
+      height: 16px;
+    }
+
+    .log {
+      height: 220px;
+      overflow: auto;
+      background: #0f172a;
+      border: 1px solid #374151;
+      border-radius: 8px;
+      padding: 10px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size: 12px;
+      line-height: 1.4;
+      white-space: pre-wrap;
+    }
+
+    .small {
+      font-size: 12px;
+      color: #9ca3af;
+      margin-top: 8px;
+    }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>360 Equirectangular -> Cubemap Processor</h1>
+    <p class="sub">
+      Select one 360 image (JPEG/PNG). Processing runs in a Worker and exports a ZIP with required folders.
+    </p>
+    <div class="nav">
+      <a href="./viewer.html">Open Cubemap Viewer</a>
+    </div>
+
+    <section class="controls">
+      <button id="dropzone" class="dropzone" type="button" aria-label="Drop or choose 360 image">
+        <div class="dropzone-inner">
+          <div id="dropzoneTitle"><strong>Drag & drop</strong> image 360 here, or click to choose file</div>
+          <div class="hint">Accepted: JPEG / PNG</div>
+          <div id="dropzoneStatus" class="status pending">No image loaded.</div>
+        </div>
+      </button>
+      <input id="fileInput" type="file" accept="image/jpeg,image/png" style="display:none;">
+      <div class="row">
+        <button id="runBtn" disabled>Process</button>
+        <button id="cancelBtn" disabled style="background:#dc2626;">Cancel</button>
+      </div>
+      <div class="row">
+        <label for="quality">JPEG quality:</label>
+        <input id="quality" type="range" min="0.6" max="0.98" step="0.01" value="0.92">
+        <span id="qualityVal" class="stat">0.92</span>
+      </div>
+      <div class="stat" id="meta">No file selected.</div>
+    </section>
+
+    <section class="progress-wrap">
+      <div class="stat" id="stage">Idle</div>
+      <progress id="progress" value="0" max="100"></progress>
+      <div class="stat" id="filesProgress">Generated files: 0 / 138</div>
+      <div class="log" id="log"></div>
+    </section>
+
+    <p class="small">
+      Output ZIP contains: <code>4096</code>, <code>2048</code>, <code>1024</code>, <code>4096_1024_tiles</code>, <code>2048_1024_tiles</code>.
+    </p>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script>
+    const fileInput = document.getElementById("fileInput");
+    const dropzone = document.getElementById("dropzone");
+    const runBtn = document.getElementById("runBtn");
+    const cancelBtn = document.getElementById("cancelBtn");
+    const qualityInput = document.getElementById("quality");
+    const qualityVal = document.getElementById("qualityVal");
+    const meta = document.getElementById("meta");
+    const stage = document.getElementById("stage");
+    const progressEl = document.getElementById("progress");
+    const filesProgress = document.getElementById("filesProgress");
+    const logEl = document.getElementById("log");
+    const dropzoneTitle = document.getElementById("dropzoneTitle");
+    const dropzoneStatus = document.getElementById("dropzoneStatus");
+
+    const TOTAL_FILES = 138; // 18 faces + 96 tiles + 24 tiles
+    let worker = null;
+    let isProcessing = false;
+    let currentBitmap = null;
+    let selectedFile = null;
+
+    function addLog(message) {
+      const time = new Date().toLocaleTimeString();
+      logEl.textContent += "[" + time + "] " + message + "\n";
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function setDropzoneState(file, width, height) {
+      if (!file) {
+        dropzone.classList.remove("ready");
+        dropzoneTitle.innerHTML = "<strong>Drag & drop</strong> image 360 here, or click to choose file";
+        dropzoneStatus.textContent = "No image loaded.";
+        dropzoneStatus.classList.add("pending");
+        return;
+      }
+      dropzone.classList.add("ready");
+      dropzoneTitle.innerHTML = "<strong>Image loaded:</strong> " + file.name;
+      dropzoneStatus.textContent = "Ready to process" + (width && height ? " (" + width + "x" + height + ")" : "") + ".";
+      dropzoneStatus.classList.remove("pending");
+    }
+
+    function resetProcessViewForNewInput(fileName) {
+      progressEl.value = 0;
+      stage.textContent = "Ready";
+      filesProgress.textContent = "Generated files: 0 / " + TOTAL_FILES;
+      logEl.textContent = "";
+      if (fileName) {
+        addLog("New input loaded: " + fileName);
+      }
+    }
+
+    qualityInput.addEventListener("input", () => {
+      qualityVal.textContent = Number(qualityInput.value).toFixed(2);
+    });
+
+    async function handleSelectedFile(file) {
+      if (!file) {
+        selectedFile = null;
+        runBtn.disabled = true;
+        meta.textContent = "No file selected.";
+        resetProcessViewForNewInput("");
+        stage.textContent = "Idle";
+        setDropzoneState(null);
+        return;
+      }
+
+      if (!/^image\/(jpeg|png)$/.test(file.type)) {
+        selectedFile = null;
+        runBtn.disabled = true;
+        meta.textContent = "Invalid file type. Please use JPEG or PNG.";
+        resetProcessViewForNewInput("");
+        stage.textContent = "Idle";
+        setDropzoneState(null);
+        addLog("Invalid file type: " + (file.type || "unknown"));
+        return;
+      }
+
+      try {
+        const bitmap = await createImageBitmap(file);
+        selectedFile = file;
+        const ratio = (bitmap.width / bitmap.height).toFixed(3);
+        resetProcessViewForNewInput(file.name);
+        meta.textContent = "Selected: " + file.name + " | " + bitmap.width + "x" + bitmap.height + " | ratio " + ratio;
+        runBtn.disabled = false;
+        setDropzoneState(file, bitmap.width, bitmap.height);
+        bitmap.close();
+      } catch (error) {
+        runBtn.disabled = true;
+        resetProcessViewForNewInput("");
+        stage.textContent = "Idle";
+        meta.textContent = "Failed to read image: " + error.message;
+        setDropzoneState(null);
+      }
+    }
+
+    fileInput.addEventListener("change", async () => {
+      const file = fileInput.files[0];
+      await handleSelectedFile(file);
+    });
+
+    dropzone.addEventListener("click", () => {
+      if (!isProcessing) {
+        fileInput.click();
+      }
+    });
+
+    dropzone.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      if (!isProcessing) {
+        dropzone.classList.add("dragover");
+      }
+    });
+
+    dropzone.addEventListener("dragleave", () => {
+      dropzone.classList.remove("dragover");
+    });
+
+    dropzone.addEventListener("drop", async (event) => {
+      event.preventDefault();
+      dropzone.classList.remove("dragover");
+      if (isProcessing) return;
+
+      const files = event.dataTransfer && event.dataTransfer.files;
+      if (!files || !files.length) return;
+      await handleSelectedFile(files[0]);
+    });
+
+    // Keep browser from handling file drop outside dropzone.
+    window.addEventListener("dragover", (event) => {
+      event.preventDefault();
+    });
+
+    window.addEventListener("drop", (event) => {
+      event.preventDefault();
+    });
+
+    function makeWorker() {
+      return new Worker("./worker.js");
+    }
+
+    function resetUiAfterStop(isCancelled) {
+      isProcessing = false;
+      runBtn.disabled = false;
+      cancelBtn.disabled = true;
+      fileInput.disabled = false;
+      dropzone.style.pointerEvents = "auto";
+      if (currentBitmap) {
+        currentBitmap.close();
+        currentBitmap = null;
+      }
+      if (isCancelled) {
+        stage.textContent = "Cancelled";
+      }
+    }
+
+    function cancelProcessing() {
+      if (!isProcessing) return;
+      if (worker) {
+        worker.terminate();
+        worker = null;
+      }
+      addLog("Processing cancelled by user.");
+      resetUiAfterStop(true);
+    }
+
+    async function startProcessing() {
+      const file = selectedFile || fileInput.files[0];
+      if (!file) {
+        addLog("Please select an image first.");
+        return;
+      }
+      if (typeof JSZip === "undefined") {
+        addLog("JSZip failed to load. Check network and refresh.");
+        return;
+      }
+
+      runBtn.disabled = true;
+      cancelBtn.disabled = false;
+      fileInput.disabled = true;
+      dropzone.style.pointerEvents = "none";
+      isProcessing = true;
+      progressEl.value = 0;
+      filesProgress.textContent = "Generated files: 0 / " + TOTAL_FILES;
+      logEl.textContent = "";
+      stage.textContent = "Initializing...";
+      addLog("Decoding input image...");
+
+      if (worker) {
+        worker.terminate();
+      }
+      worker = makeWorker();
+
+      const zip = new JSZip();
+      zip.folder("4096");
+      zip.folder("2048");
+      zip.folder("1024");
+      zip.folder("4096_1024_tiles");
+      zip.folder("2048_1024_tiles");
+
+      let generatedFiles = 0;
+      const quality = Number(qualityInput.value);
+      const imageBitmap = await createImageBitmap(file);
+      currentBitmap = imageBitmap;
+
+      worker.onmessage = async (event) => {
+        const data = event.data;
+
+        if (data.type === "progress") {
+          progressEl.value = Math.min(99, Number(data.overallPct) || 0);
+          stage.textContent = data.message + (data.face && data.face !== "-" ? " [" + data.face + "]" : "");
+          filesProgress.textContent = "Generated files: " + (data.generatedFiles || generatedFiles) + " / " + TOTAL_FILES;
+          if (data.message && data.message.startsWith("Finished face")) {
+            addLog(data.message);
+          }
+          return;
+        }
+
+        if (data.type === "file") {
+          const folder = zip.folder(data.folder);
+          folder.file(data.name, data.blob);
+          generatedFiles += 1;
+          filesProgress.textContent = "Generated files: " + generatedFiles + " / " + TOTAL_FILES;
+          return;
+        }
+
+        if (data.type === "done") {
+          stage.textContent = "Compressing ZIP...";
+          addLog("All assets ready. Creating ZIP...");
+          const zipBlob = await zip.generateAsync(
+            { type: "blob", compression: "DEFLATE", compressionOptions: { level: 5 } },
+            (metadata) => {
+              progressEl.value = Math.max(90, Math.min(100, 90 + metadata.percent * 0.1));
+              stage.textContent = "Compressing ZIP... " + metadata.percent.toFixed(1) + "%";
+            }
+          );
+
+          const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+          const baseName = file.name.replace(/\.[^.]+$/, "");
+          const a = document.createElement("a");
+          a.href = URL.createObjectURL(zipBlob);
+          a.download = baseName + "_cubemap_" + stamp + ".zip";
+          a.click();
+          URL.revokeObjectURL(a.href);
+
+          progressEl.value = 100;
+          stage.textContent = "Done";
+          addLog("Done. ZIP downloaded.");
+          resetUiAfterStop(false);
+          if (worker) {
+            worker.terminate();
+            worker = null;
+          }
+          return;
+        }
+
+        if (data.type === "error") {
+          throw new Error(data.message || "Worker failed");
+        }
+      };
+
+      worker.onerror = (error) => {
+        addLog("Worker error: " + error.message);
+        stage.textContent = "Error";
+        resetUiAfterStop(false);
+        worker = null;
+      };
+
+      addLog("Starting worker pipeline...");
+      worker.postMessage({ imageBitmap, quality }, [imageBitmap]);
+    }
+
+    runBtn.addEventListener("click", () => {
+      startProcessing().catch((error) => {
+        addLog("Failed: " + error.message);
+        stage.textContent = "Error";
+        resetUiAfterStop(false);
+        if (worker) {
+          worker.terminate();
+          worker = null;
+        }
+      });
+    });
+
+    cancelBtn.addEventListener("click", cancelProcessing);
+  </script>
+</body>
+</html>

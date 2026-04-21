@@ -1,0 +1,614 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cubemap 360 Viewer</title>
+  <style>
+    :root {
+      font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+      color-scheme: dark;
+    }
+
+    body {
+      margin: 0;
+      background: #0b1220;
+      color: #e5e7eb;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    body.loaded .topbar {
+      display: none;
+    }
+
+    .topbar {
+      padding: 12px 16px;
+      border-bottom: 1px solid #243047;
+      background: #101826;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .title {
+      font-size: 14px;
+      color: #cbd5e1;
+      margin-right: auto;
+    }
+
+    .nav {
+      display: flex;
+      gap: 8px;
+      margin-right: 8px;
+    }
+
+    .nav a {
+      display: inline-block;
+      border: 1px solid #334155;
+      background: #1e293b;
+      color: #bfdbfe;
+      border-radius: 8px;
+      padding: 8px 12px;
+      text-decoration: none;
+      font-weight: 600;
+      font-size: 13px;
+    }
+
+    button {
+      border: 1px solid #334155;
+      background: #1e293b;
+      color: #e5e7eb;
+      border-radius: 8px;
+      padding: 8px 12px;
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    button:hover {
+      background: #283548;
+    }
+
+    button#dropzone {
+      border: 2px dashed #3b82f6;
+      border-radius: 10px;
+      padding: 14px 16px;
+      color: #bfdbfe;
+      background: #0f172a;
+      font-size: 16px;
+      cursor: pointer;
+      width: min(80vw, 1200px);
+      flex: 0 1 min(80vw, 1200px);
+      min-height: clamp(320px, 55vh, 760px);
+      margin: 0 auto;
+    }
+
+    button#dropzone.dragover {
+      background: #13243f;
+      border-color: #60a5fa;
+    }
+
+    .status {
+      font-size: 12px;
+      color: #93c5fd;
+      width: 100%;
+    }
+
+    .faces {
+      font-size: 12px;
+      color: #94a3b8;
+      width: 100%;
+    }
+
+    #viewer {
+      flex: 1;
+      min-height: 0;
+      position: relative;
+    }
+
+    body.loaded #viewer {
+      height: 100vh;
+      min-height: 100vh;
+    }
+
+    #overlay {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      background: radial-gradient(circle at center, rgba(15,23,42,0.35), rgba(2,6,23,0.75));
+      color: #dbeafe;
+      text-align: center;
+      pointer-events: none;
+      font-size: 13px;
+      line-height: 1.35;
+      padding: 20px;
+      box-sizing: border-box;
+    }
+
+    .overlay-inner {
+      max-width: 680px;
+    }
+
+    #floatingActions {
+      position: fixed;
+      top: 14px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 20;
+      display: none;
+      gap: 10px;
+      align-items: center;
+      background: rgba(15, 23, 42, 0.72);
+      border: 1px solid #334155;
+      border-radius: 10px;
+      padding: 8px 10px;
+      backdrop-filter: blur(8px);
+    }
+
+    body.loaded #floatingActions {
+      display: flex;
+    }
+
+    #floatingActions .small-note {
+      font-size: 12px;
+      color: #cbd5e1;
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="title">Cubemap 360 Viewer (Three.js)</div>
+    <div class="nav">
+      <a href="./index.html">Go To Converter</a>
+    </div>
+    <button id="pickBtn" type="button">Choose 6 Images</button>
+    <button id="dropzone" type="button">Drag & drop 6 cubemap faces</button>
+    <input id="fileInput" type="file" accept="image/jpeg,image/png" multiple style="display:none;">
+    <div id="status" class="status">Waiting for images...</div>
+    <div id="faces" class="faces">Need: px nx py ny pz nz</div>
+  </header>
+
+  <main id="viewer">
+    <div id="overlay">
+      <div class="overlay-inner">
+        Drop 6 cubemap faces: <strong>px nx py ny pz nz</strong>.<br>
+        Example filenames: <code>px.jpg</code> ... <code>nz.jpg</code>.
+      </div>
+    </div>
+  </main>
+
+  <div id="floatingActions">
+    <button id="convertBtn" type="button">Convert Cubemap To 360 (PNG)</button>
+    <button id="loadAnotherBtn" type="button">Load Another Cubemap</button>
+    <span id="convertStatus" class="small-note"></span>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.min.js"></script>
+  <script>
+    const FACE_ORDER = ["px", "nx", "py", "ny", "pz", "nz"];
+    const FACE_ALIASES = {
+      px: ["px", "posx", "right", "rt"],
+      nx: ["nx", "negx", "left", "lf"],
+      py: ["py", "posy", "up", "top"],
+      ny: ["ny", "negy", "down", "bottom"],
+      pz: ["pz", "posz", "front", "forward", "ft"],
+      nz: ["nz", "negz", "back", "rear", "bk"]
+    };
+
+    const viewerEl = document.getElementById("viewer");
+    const overlayEl = document.getElementById("overlay");
+    const fileInput = document.getElementById("fileInput");
+    const pickBtn = document.getElementById("pickBtn");
+    const dropzone = document.getElementById("dropzone");
+    const statusEl = document.getElementById("status");
+    const facesEl = document.getElementById("faces");
+    const convertBtn = document.getElementById("convertBtn");
+    const loadAnotherBtn = document.getElementById("loadAnotherBtn");
+    const convertStatusEl = document.getElementById("convertStatus");
+
+    if (!window.THREE) {
+      statusEl.textContent = "Three.js failed to load. Please refresh or run via local server.";
+      throw new Error("Three.js not loaded");
+    }
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(viewerEl.clientWidth, viewerEl.clientHeight);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.NoToneMapping;
+    viewerEl.appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(75, viewerEl.clientWidth / viewerEl.clientHeight, 0.1, 2000);
+    camera.position.set(0, 0, 0);
+
+    // Lightweight drag-to-look controls without external modules.
+    let isUserInteracting = false;
+    let pointerDownX = 0;
+    let pointerDownY = 0;
+    let lon = 0;
+    let lat = 0;
+    let lonOnPointerDown = 0;
+    let latOnPointerDown = 0;
+    const target = new THREE.Vector3();
+
+    renderer.domElement.addEventListener("pointerdown", (event) => {
+      isUserInteracting = true;
+      pointerDownX = event.clientX;
+      pointerDownY = event.clientY;
+      lonOnPointerDown = lon;
+      latOnPointerDown = lat;
+      renderer.domElement.setPointerCapture(event.pointerId);
+    });
+
+    renderer.domElement.addEventListener("pointermove", (event) => {
+      if (!isUserInteracting) return;
+      lon = lonOnPointerDown + (pointerDownX - event.clientX) * 0.12;
+      lat = latOnPointerDown + (event.clientY - pointerDownY) * 0.12;
+    });
+
+    renderer.domElement.addEventListener("pointerup", (event) => {
+      isUserInteracting = false;
+      renderer.domElement.releasePointerCapture(event.pointerId);
+    });
+
+    renderer.domElement.addEventListener("wheel", (event) => {
+      const nextFov = camera.fov + (event.deltaY > 0 ? 2 : -2);
+      camera.fov = THREE.MathUtils.clamp(nextFov, 45, 95);
+      camera.updateProjectionMatrix();
+    }, { passive: true });
+
+    let currentUrls = [];
+    let currentCubeTexture = null;
+    let currentFaceMap = null;
+
+    function setStatus(message) {
+      statusEl.textContent = message;
+    }
+
+    function setConvertStatus(message) {
+      convertStatusEl.textContent = message || "";
+    }
+
+    function cleanupObjectUrls() {
+      for (const url of currentUrls) {
+        URL.revokeObjectURL(url);
+      }
+      currentUrls = [];
+    }
+
+    function disposeCubeTexture() {
+      if (currentCubeTexture) {
+        currentCubeTexture.dispose();
+        currentCubeTexture = null;
+      }
+    }
+
+    function isSupportedImageFile(file) {
+      if (!file || !file.name) return false;
+      const byMime = /^image\/(jpeg|png)$/i.test(file.type || "");
+      const byExt = /\.(jpe?g|png)$/i.test(file.name);
+      return byMime || byExt;
+    }
+
+    function detectFaceFromName(fileName) {
+      const lower = fileName.toLowerCase();
+      for (const face of FACE_ORDER) {
+        for (const alias of FACE_ALIASES[face]) {
+          const tokenRegex = new RegExp("(^|[^a-z0-9])" + alias + "([^a-z0-9]|$)", "i");
+          if (tokenRegex.test(lower)) {
+            return face;
+          }
+        }
+      }
+      return null;
+    }
+
+    function updateFaceStatus(faceMap) {
+      const info = FACE_ORDER.map((f) => (faceMap[f] ? "[" + f + "]" : f)).join(" ");
+      facesEl.textContent = "Faces: " + info;
+    }
+
+    async function buildCubemapFromFiles(fileList) {
+      const files = Array.from(fileList || []).filter((file) => isSupportedImageFile(file));
+      const faceMap = {};
+      const unknownFiles = [];
+
+      for (const file of files) {
+        const face = detectFaceFromName(file.name);
+        if (face && !faceMap[face]) {
+          faceMap[face] = file;
+        } else if (!face) {
+          unknownFiles.push(file);
+        }
+      }
+
+      // Fallback: if user drops exactly 6 images but names are not standard,
+      // assign missing faces by file order so viewer still renders.
+      const missingBeforeFallback = FACE_ORDER.filter((f) => !faceMap[f]);
+      if (missingBeforeFallback.length && files.length === 6) {
+        let unknownIndex = 0;
+        for (const face of missingBeforeFallback) {
+          if (!unknownFiles[unknownIndex]) break;
+          faceMap[face] = unknownFiles[unknownIndex];
+          unknownIndex += 1;
+        }
+      }
+
+      updateFaceStatus(faceMap);
+
+      const missing = FACE_ORDER.filter((f) => !faceMap[f]);
+      if (missing.length) {
+        setStatus("Missing faces: " + missing.join(", "));
+        throw new Error("Please provide all 6 faces: px nx py ny pz nz");
+      }
+
+      setStatus("Loading 6 textures...");
+      cleanupObjectUrls();
+      disposeCubeTexture();
+
+      const urls = FACE_ORDER.map((face) => URL.createObjectURL(faceMap[face]));
+      currentUrls = urls;
+
+      const loader = new THREE.CubeTextureLoader();
+      const cubeTexture = await new Promise((resolve, reject) => {
+        loader.load(urls, resolve, undefined, reject);
+      });
+
+      cubeTexture.colorSpace = THREE.SRGBColorSpace;
+      scene.background = cubeTexture;
+      scene.environment = cubeTexture;
+      currentCubeTexture = cubeTexture;
+      currentFaceMap = faceMap;
+      overlayEl.style.display = "none";
+      document.body.classList.add("loaded");
+      resizeRendererToViewer();
+      setStatus("Loaded. Drag to look around.");
+      setConvertStatus("");
+    }
+
+    function onFilesSelected(files) {
+      if (!files || !files.length) {
+        return;
+      }
+      setStatus("Reading " + files.length + " file(s)...");
+      buildCubemapFromFiles(files).catch((error) => {
+        document.body.classList.remove("loaded");
+        setStatus("Load failed: " + error.message);
+      });
+    }
+
+    function handleFileDrop(event) {
+      event.preventDefault();
+      dropzone.classList.remove("dragover");
+      onFilesSelected(event.dataTransfer && event.dataTransfer.files);
+    }
+
+    pickBtn.addEventListener("click", () => {
+      fileInput.click();
+    });
+
+    fileInput.addEventListener("change", () => {
+      onFilesSelected(fileInput.files);
+    });
+
+    dropzone.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      dropzone.classList.add("dragover");
+    });
+
+    dropzone.addEventListener("dragleave", () => {
+      dropzone.classList.remove("dragover");
+    });
+
+    dropzone.addEventListener("drop", (event) => {
+      handleFileDrop(event);
+    });
+
+    dropzone.addEventListener("click", () => {
+      fileInput.click();
+    });
+
+    // Accept drop on the full viewer area too.
+    viewerEl.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      dropzone.classList.add("dragover");
+    });
+
+    viewerEl.addEventListener("drop", (event) => {
+      handleFileDrop(event);
+    });
+
+    // Prevent browser from opening dropped files.
+    window.addEventListener("dragover", (event) => {
+      event.preventDefault();
+    });
+
+    window.addEventListener("drop", (event) => {
+      event.preventDefault();
+    });
+
+    function resizeRendererToViewer() {
+      const w = viewerEl.clientWidth;
+      const h = viewerEl.clientHeight;
+      renderer.setSize(w, h);
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+    }
+
+    window.addEventListener("resize", resizeRendererToViewer);
+
+    function bilinearSample(data, size, x, y) {
+      const x0 = Math.floor(x);
+      const y0 = Math.floor(y);
+      const x1 = Math.min(x0 + 1, size - 1);
+      const y1 = Math.min(y0 + 1, size - 1);
+      const wx = x - x0;
+      const wy = y - y0;
+
+      const i00 = (y0 * size + x0) * 4;
+      const i10 = (y0 * size + x1) * 4;
+      const i01 = (y1 * size + x0) * 4;
+      const i11 = (y1 * size + x1) * 4;
+
+      const out = [0, 0, 0];
+      for (let c = 0; c < 3; c++) {
+        const v00 = data[i00 + c];
+        const v10 = data[i10 + c];
+        const v01 = data[i01 + c];
+        const v11 = data[i11 + c];
+        const v0 = v00 * (1 - wx) + v10 * wx;
+        const v1 = v01 * (1 - wx) + v11 * wx;
+        out[c] = Math.round(v0 * (1 - wy) + v1 * wy);
+      }
+      return out;
+    }
+
+    function directionToFaceUv(dx, dy, dz) {
+      const ax = Math.abs(dx);
+      const ay = Math.abs(dy);
+      const az = Math.abs(dz);
+
+      if (ax >= ay && ax >= az) {
+        if (dx > 0) return { face: "px", a: -dz / ax, b: -dy / ax };
+        return { face: "nx", a: dz / ax, b: -dy / ax };
+      }
+      if (ay >= ax && ay >= az) {
+        if (dy > 0) return { face: "py", a: dx / ay, b: dz / ay };
+        return { face: "ny", a: dx / ay, b: -dz / ay };
+      }
+      if (dz > 0) return { face: "pz", a: dx / az, b: -dy / az };
+      return { face: "nz", a: -dx / az, b: -dy / az };
+    }
+
+    async function loadFaceImageData(faceMap) {
+      const out = {};
+      let faceSize = 0;
+
+      for (const face of FACE_ORDER) {
+        const file = faceMap[face];
+        const bitmap = await createImageBitmap(file);
+        const size = Math.min(bitmap.width, bitmap.height);
+        if (!faceSize) faceSize = size;
+        const canvas = document.createElement("canvas");
+        canvas.width = faceSize;
+        canvas.height = faceSize;
+        const ctx = canvas.getContext("2d", { willReadFrequently: true });
+        ctx.drawImage(bitmap, 0, 0, faceSize, faceSize);
+        out[face] = ctx.getImageData(0, 0, faceSize, faceSize).data;
+        bitmap.close();
+      }
+
+      return { faceSize, faceDataMap: out };
+    }
+
+    async function convertCubemapToEquirectPng(faceMap) {
+      const decoded = await loadFaceImageData(faceMap);
+      const faceSize = decoded.faceSize;
+      const srcMap = decoded.faceDataMap;
+
+      const outW = faceSize * 4;
+      const outH = faceSize * 2;
+      const canvas = document.createElement("canvas");
+      canvas.width = outW;
+      canvas.height = outH;
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
+      const out = ctx.createImageData(outW, outH);
+      const dst = out.data;
+
+      for (let y = 0; y < outH; y++) {
+        const v = (y + 0.5) / outH;
+        const phi = Math.PI / 2 - v * Math.PI;
+        const cosPhi = Math.cos(phi);
+        const sinPhi = Math.sin(phi);
+
+        for (let x = 0; x < outW; x++) {
+          const u = (x + 0.5) / outW;
+          const theta = u * Math.PI * 2 - Math.PI;
+          const dx = cosPhi * Math.cos(theta);
+          const dy = sinPhi;
+          const dz = -cosPhi * Math.sin(theta);
+
+          const hit = directionToFaceUv(dx, dy, dz);
+          const sx = (hit.a + 1) * 0.5 * (faceSize - 1);
+          const sy = (hit.b + 1) * 0.5 * (faceSize - 1);
+          const rgb = bilinearSample(srcMap[hit.face], faceSize, sx, sy);
+
+          const i = (y * outW + x) * 4;
+          dst[i] = rgb[0];
+          dst[i + 1] = rgb[1];
+          dst[i + 2] = rgb[2];
+          dst[i + 3] = 255;
+        }
+
+        if (y % 64 === 0 || y === outH - 1) {
+          setConvertStatus("Converting... " + Math.round(((y + 1) / outH) * 100) + "%");
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+      }
+
+      ctx.putImageData(out, 0, 0);
+      return await new Promise((resolve) => {
+        canvas.toBlob((blob) => resolve(blob), "image/png");
+      });
+    }
+
+    async function handleConvertClick() {
+      if (!currentFaceMap) {
+        setConvertStatus("Load cubemap first.");
+        return;
+      }
+      if (convertBtn.disabled) return;
+
+      try {
+        convertBtn.disabled = true;
+        setConvertStatus("Preparing conversion...");
+        const pngBlob = await convertCubemapToEquirectPng(currentFaceMap);
+        if (!pngBlob) throw new Error("Failed to generate PNG blob.");
+
+        const url = URL.createObjectURL(pngBlob);
+        const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "cubemap_to_360_" + stamp + ".png";
+        a.click();
+        URL.revokeObjectURL(url);
+        setConvertStatus("Downloaded high-quality 360 PNG.");
+      } catch (error) {
+        setConvertStatus("Convert failed: " + (error && error.message ? error.message : String(error)));
+      } finally {
+        convertBtn.disabled = false;
+      }
+    }
+
+    function handleLoadAnother() {
+      document.body.classList.remove("loaded");
+      overlayEl.style.display = "grid";
+      resizeRendererToViewer();
+      setConvertStatus("");
+      setStatus("Waiting for images...");
+      fileInput.value = "";
+      fileInput.click();
+    }
+
+    convertBtn.addEventListener("click", handleConvertClick);
+    loadAnotherBtn.addEventListener("click", handleLoadAnother);
+
+    function animate() {
+      lat = THREE.MathUtils.clamp(lat, -85, 85);
+      const phi = THREE.MathUtils.degToRad(90 - lat);
+      const theta = THREE.MathUtils.degToRad(lon);
+      target.x = Math.sin(phi) * Math.cos(theta);
+      target.y = Math.cos(phi);
+      target.z = Math.sin(phi) * Math.sin(theta);
+      camera.lookAt(target);
+      renderer.render(scene, camera);
+      requestAnimationFrame(animate);
+    }
+    animate();
+  </script>
+</body>
+</html>
